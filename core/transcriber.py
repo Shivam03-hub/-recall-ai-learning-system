@@ -1,9 +1,11 @@
 import os
+import gc
 import requests
 import whisper
 import torch
 from pydub import AudioSegment
-from core.diarizer import diarize_audio
+from core.diarizer import diarize_audio, unload_diarization_pipeline
+
 SARVAM_PIECE_SECONDS = 25
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
@@ -29,6 +31,18 @@ def load_model():
                 raise
         print("Whisper model loaded.")
     return _model
+
+
+def unload_whisper_model():
+    """Frees the Whisper model from memory after use."""
+    global _model
+    if _model is not None:
+        del _model
+        _model = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        print("Whisper model unloaded from memory.")
 
 
 def transcribe_chunk_whisper(chunk_path: str) -> str:
@@ -93,9 +107,6 @@ def transcribe_all(chunks: list, language: str = "english") -> str:
     return full_transcript.strip()
 
 
-
-
-
 def transcribe_with_speakers(wav_path: str) -> str:
     """
     Combines Whisper transcription with speaker diarization to produce
@@ -103,12 +114,15 @@ def transcribe_with_speakers(wav_path: str) -> str:
     SPEAKER_00: Welcome to the show...
     SPEAKER_01: Thanks for having me...
     """
-    model = load_model()
-
     print("Running diarization...")
     speaker_segments = diarize_audio(wav_path)
 
+    # Free diarization pipeline from memory before loading Whisper,
+    # so both models are never resident in RAM at the same time
+    unload_diarization_pipeline()
+
     print("Running transcription with word timestamps...")
+    model = load_model()
     result = model.transcribe(wav_path, task="transcribe", word_timestamps=True, fp16=torch.cuda.is_available())
 
     labeled_lines = []
@@ -116,12 +130,9 @@ def transcribe_with_speakers(wav_path: str) -> str:
     current_line = []
 
     def find_speaker(timestamp):
-        # exact match first
         for seg in speaker_segments:
             if seg["start"] <= timestamp <= seg["end"]:
                 return seg["speaker"]
-        # small tolerance window for boundary mismatches between Whisper
-        # and pyannote timestamps
         tolerance = 0.3
         for seg in speaker_segments:
             if seg["start"] - tolerance <= timestamp <= seg["end"] + tolerance:

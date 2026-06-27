@@ -3,6 +3,7 @@ Speaker diarization — identifies WHO is speaking when in an audio file.
 """
 
 import os
+import gc
 import torch
 import soundfile as sf
 from pyannote.audio import Pipeline
@@ -23,6 +24,18 @@ def load_diarization_pipeline():
             _diarization_pipeline.to(torch.device("cuda"))
         print("Diarization pipeline loaded.")
     return _diarization_pipeline
+
+
+def unload_diarization_pipeline():
+    """Frees the diarization pipeline from memory after use."""
+    global _diarization_pipeline
+    if _diarization_pipeline is not None:
+        del _diarization_pipeline
+        _diarization_pipeline = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        print("Diarization pipeline unloaded from memory.")
 
 
 def diarize_audio(wav_path: str) -> list[dict]:
